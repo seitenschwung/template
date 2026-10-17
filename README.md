@@ -3,10 +3,21 @@
 Starting point for new projects made with `dev <name>` (claude-dev kit). It brings:
 
 - `CLAUDE.md`: a skeleton the box fills in during its first session
-- `.github/workflows/ci.yml`: checks, a hardened Docker test, browser tests, and a deploy to
-  Coolify after green CI on `main`
+- a working demo site (`public/`, `Dockerfile`, `nginx.conf`) that meets the deploy contract, so CI
+  is green from the first commit. Replace it with the real project.
+- `.github/workflows/ci.yml`: a thin caller. The pipeline itself (checks, hardened Docker test,
+  browser tests, deploy to Coolify after green CI on `main`) is `pipeline.yml` in this repository,
+  shared by all projects as `seitenschwung/template/.github/workflows/pipeline.yml@v1`
 - `docker-compose.yml`: what Coolify runs (the image tested by CI)
 - `.gitignore`, `.dockerignore`, a PR template
+
+## Changing the shared pipeline (owner)
+
+Projects follow the moving tag `v1`. After a tested change to `pipeline.yml` on `main`, move it:
+`git tag -f v1 && git push -f origin v1`. A breaking change gets `v2`; projects switch by editing
+the `uses:` line in their `ci.yml`. Test changes on a branch by pointing this repository's own
+`ci.yml` at that branch (`...pipeline.yml@<branch>`), and set it back to `@v1` before merging.
+This repository's CI runs the demo through the pipeline, so a green run is the template's self-test.
 
 Replace this README with one about the project.
 

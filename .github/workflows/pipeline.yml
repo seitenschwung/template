@@ -65,6 +65,16 @@ jobs:
           if [ -f Dockerfile ]; then echo "dockerfile=true" >> "$GITHUB_OUTPUT"
           else echo "dockerfile=false" >> "$GITHUB_OUTPUT"; echo "No Dockerfile yet, nothing to build or deploy."; fi
 
+      # Stack-agnostic tests: a Dockerfile can define a stage named "test" (lint, unit tests).
+      # A failing stage fails the pipeline. The final image does not contain it.
+      - name: Tests (Dockerfile stage "test")
+        if: steps.has.outputs.dockerfile == 'true'
+        run: |
+          if grep -qiE '^FROM[[:space:]]+[^[:space:]]+[[:space:]]+AS[[:space:]]+test[[:space:]]*$' Dockerfile; then
+            docker build --target test --build-arg APP_VERSION="${GITHUB_SHA}" .
+          else
+            echo "No stage named test in the Dockerfile."
+          fi
       - name: Build
         if: steps.has.outputs.dockerfile == 'true'
         run: docker build --build-arg APP_VERSION="${GITHUB_SHA}" -t "$IMAGE" .

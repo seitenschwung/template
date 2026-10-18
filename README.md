@@ -8,7 +8,7 @@ Starting point for new projects made with `dev <name>` (claude-dev kit). It brin
 - `.github/workflows/ci.yml`: a thin caller. The pipeline itself (checks, hardened Docker test,
   browser tests, deploy to Coolify after green CI on `main`) is `pipeline.yml` in this repository,
   shared by all projects as `seitenschwung/template/.github/workflows/pipeline.yml@v1`
-- `docker-compose.yml`: what Coolify runs (the image tested by CI)
+- `docker-compose.yml`: what Coolify runs (the image tested by CI), with the CrowdSec labels and log rotation
 - `.gitignore`, `.dockerignore`, a PR template
 
 ## Changing the shared pipeline (owner)

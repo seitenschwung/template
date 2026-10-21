@@ -3,8 +3,9 @@
 services:
   web:
     # Coolify doesn't build: CI builds and tests the image, pushes it to ghcr.io and sets IMAGE
-    # (an environment variable in Coolify) to exactly that tag before every deploy.
-    image: ${IMAGE:?set by the CI deploy job}
+    # (an environment variable in Coolify) to exactly that tag before every deploy. The default only
+    # lets Coolify create the app before the first deploy; it is not a real image and never runs.
+    image: ${IMAGE:-ghcr.io/seitenschwung/image-set-by-ci:none}
     restart: unless-stopped
     # CrowdSec reads this container's logs through the Docker API (labels, see CLAUDE.md).
     labels:

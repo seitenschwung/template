@@ -259,9 +259,10 @@ jobs:
             ${{ runner.temp }}/e2e/lighthouse/
           retention-days: 14
           if-no-files-found: ignore
-      # Full-page screenshots of every checked page (desktop and mobile), for preview.yml.
+      # Full-page screenshots of every checked page (desktop and mobile), for preview.yml: PRs are compared
+      # with the desktop shots of main.
       - uses: actions/upload-artifact@v7
-        if: always() && github.event_name == 'pull_request' && steps.contract.outputs.html == 'true' && vars.BROWSER_TESTS != 'off'
+        if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && steps.contract.outputs.html == 'true' && vars.BROWSER_TESTS != 'off'
         with:
           name: screenshots
           path: ${{ runner.temp }}/e2e/shots/

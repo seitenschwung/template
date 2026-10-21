@@ -21,21 +21,25 @@ This repository's CI runs the demo through the pipeline, so a green run is the t
 
 Replace this README with one about the project.
 
-## Setting up the deploy (owner, once per project)
+## Setting up the deploy
 
-Nothing deploys until `COOLIFY_APP_UUID` is set, so CI stays green before that.
+`dev <name>` does this for a new project: it sets the repository variable `DEPLOY=auto` and starts
+the first CI run. On `main` the pipeline then creates a Coolify project and app named like the
+repository (domain `https://<name>.seitenschwung.com`, service `web` on port 8080), sets `IMAGE`,
+deploys the tested image and checks `/version.txt` and `/healthz`. The box only has to push.
 
-1. **Coolify:** New Resource → this repository → Build Pack **Docker Compose**. Give the
-   service `web` the domain `https://<domain>:8080`. The server needs a `docker login ghcr.io`
-   (a token with `read:packages`) if the repository is private.
-2. **GitHub → Settings → Environments → `production`:**
-   - secrets `COOLIFY_TOKEN` (Coolify API token with read, write and deploy),
-     `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET` (Tailscale OAuth client with tag `tag:ci`)
-   - variables `COOLIFY_URL` (Coolify on the tailnet) and `APP_URL` (`https://<domain>`)
-3. **GitHub → Settings → Secrets and variables → Actions → Variables (repository):**
-   `COOLIFY_APP_UUID`. It must be a repository variable, since it decides whether the deploy
-   job runs at all.
-4. Optional: `BROWSER_TESTS=off` (repository variable) for a project without a web UI.
+Once for the organisation (owner):
+- organisation secrets `COOLIFY_TOKEN` (API token with read, write and deploy), `TS_OAUTH_CLIENT_ID`,
+  `TS_OAUTH_SECRET` (Tailscale OAuth client with tag `tag:ci`); organisation variable `COOLIFY_URL`
+- optional organisation variables `BASE_DOMAIN` (default `seitenschwung.com`) and `COOLIFY_SERVER_UUID`
+  (needed only if Coolify has more than one server)
+- a wildcard DNS record `*.<BASE_DOMAIN>` pointing at the server
+
+Per project, optional repository variables: `DEPLOY=off` (or unset) for no deploy at all,
+`BROWSER_TESTS=off` for a project without a web UI. Repositories must be public, because Coolify
+clones them without credentials. Older projects with a hand-made Coolify app keep working with the
+repository variables `COOLIFY_APP_UUID` and `APP_URL`. This template and the other blueprints do
+not set `DEPLOY`, so they never create an app.
 
 The deploy steps live in the workflow on purpose: the bot that writes the code can't change
 workflow files, so it can't change what runs with the deploy secrets.

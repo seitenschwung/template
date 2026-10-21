@@ -1,0 +1,121 @@
+name: Preview
+
+# Optional second job of a project's ci.yml (`uses: seitenschwung/template/.github/workflows/preview.yml@v1`,
+# after the pipeline job): shows a pull request visually without waiting for a deploy. The pipeline
+# takes full-page screenshots of every page it tests (desktop and mobile); this workflow puts them
+# into one sticky comment on the PR.
+#
+# The images are stored on the branch `pr-previews` (one folder per PR, only the newest commit of
+# each PR, folders of closed PRs are removed on the next run). That branch is rebuilt as a single
+# commit every time, so it stays small. Raw image links only work in public repositories; in a
+# private one the comment links the workflow run instead.
+#
+# Runs no code from the repository: it checks out nothing and only handles the screenshots artifact.
+# Not for fork PRs (their token is read-only), they are skipped.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    name: PR comment with screenshots
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: preview-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Get the screenshots
+        id: get
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: screenshots
+          path: shots
+
+      - name: Publish and comment
+        if: steps.get.outcome == 'success'
+        run: |
+          set -euo pipefail
+          short="${SHA:0:7}"
+          run_url="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          public="$(gh api "repos/${REPO}" --jq '.private | not')"
+          mapfile -t files < <(cd shots && ls -1 *.png 2>/dev/null | sort)
+          [ "${#files[@]}" -gt 0 ] || { echo "No screenshots, nothing to show."; exit 0; }
+
+          # 1. Rebuild the branch `pr-previews` as one commit: this PR's newest shots, the other open PRs' folders.
+          work="$(mktemp -d)"; cd "$work"
+          git init -q .
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          push() {
+            git fetch -q origin pr-previews 2>/dev/null && git checkout -q -f FETCH_HEAD || git checkout -q --orphan pr-previews
+            git rm -rq --ignore-unmatch "pr-${PR}" 2>/dev/null || true
+            mkdir -p "pr-${PR}/${short}"
+            cp "${GITHUB_WORKSPACE}/shots/"*.png "pr-${PR}/${short}/"
+            for d in pr-*; do
+              [ -d "$d" ] || continue
+              n="${d#pr-}"
+              [ "$n" = "$PR" ] && continue
+              state="$(gh api "repos/${REPO}/pulls/${n}" --jq .state 2>/dev/null || echo open)"
+              [ "$state" = open ] || git rm -rqf "$d"
+            done
+            git add -A
+            tree="$(git write-tree)"
+            commit="$(git commit-tree "$tree" -m "previews: PR ${PR} @ ${short}")"
+            lease="$(git rev-parse -q --verify FETCH_HEAD 2>/dev/null || true)"
+            git push -q --force-with-lease="pr-previews:${lease}" origin "${commit}:refs/heads/pr-previews"
+          }
+          for attempt in 1 2 3; do
+            push && break
+            [ "$attempt" = 3 ] && { echo "::error::Could not publish the screenshots"; exit 1; }
+            echo "Push raced with another PR, retrying …"; sleep $((attempt * 3))
+          done
+
+          # 2. One sticky comment.
+          raw="https://raw.githubusercontent.com/${REPO}/pr-previews/pr-${PR}/${short}"
+          {
+            echo "<!-- pr-preview -->"
+            echo "### 📸 Preview of \`${short}\`"
+            echo
+            if [ "$public" = true ]; then
+              echo "Full-page screenshots from the browser tests, desktop left, mobile right. Newest commit only."
+              echo
+              echo "| Page | Desktop | Mobile |"
+              echo "|---|---|---|"
+              count=0
+              for f in "${files[@]}"; do
+                case "$f" in desktop--*) ;; *) continue ;; esac
+                page="${f#desktop--}"; page="${page%.png}"
+                [ "$count" -lt 12 ] || break
+                count=$((count + 1))
+                mob=""; [ -f "${GITHUB_WORKSPACE}/shots/mobile--${page}.png" ] && mob="<img src=\"${raw}/mobile--${page}.png\" width=\"160\">"
+                echo "| \`${page//_//}\` | <img src=\"${raw}/${f}\" width=\"420\"> | ${mob} |"
+              done
+              total="$(printf '%s\n' "${files[@]}" | grep -c '^desktop--' || true)"
+              if [ "$total" -gt 12 ]; then echo; echo "…and $((total - 12)) more pages in the \`screenshots\` artifact of the [run](${run_url})."; fi
+            else
+              echo "Private repository: the images can't be shown here. Download the \`screenshots\` artifact of [this run](${run_url})."
+            fi
+            echo
+            echo "<sub>Checks and the full report: [workflow run](${run_url})</sub>"
+          } > "$RUNNER_TEMP/comment.md"
+
+          id="$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- pr-preview -->"))) | .id' | head -n1)"
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${id}" -F "body=@${RUNNER_TEMP}/comment.md" > /dev/null
+          else
+            gh api -X POST "repos/${REPO}/issues/${PR}/comments" -F "body=@${RUNNER_TEMP}/comment.md" > /dev/null
+          fi
+          echo "Commented on #${PR}"

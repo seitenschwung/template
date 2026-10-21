@@ -135,6 +135,7 @@ jobs:
           cat > site.spec.mjs <<'EOF'
           import { test, expect } from '@playwright/test';
           import AxeBuilder from '@axe-core/playwright';
+          import { mkdirSync } from 'node:fs';
 
           const ORIGIN = new URL(process.env.BASE_URL).origin;
           const MAX_PAGES = 25;
@@ -175,6 +176,11 @@ jobs:
 
             await testInfo.attach(`${path} top`, { body: await page.screenshot(), contentType: 'image/png' });
             await scrollThrough(page);
+
+            // Full-page shot for the PR preview comment (see preview.yml), one per viewport and page.
+            mkdirSync('shots', { recursive: true });
+            const slug = path === '/' ? 'home' : path.replace(/^\/|\/$/g, '').replace(/[^A-Za-z0-9._-]+/g, '_');
+            await page.screenshot({ path: `shots/${testInfo.project.name}--${slug}.png`, fullPage: true }).catch(() => {});
 
             const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
             expect.soft(overflow, `${path} horizontal overflow in px`).toBeLessThanOrEqual(1);
@@ -252,6 +258,14 @@ jobs:
             ${{ runner.temp }}/e2e/results/
             ${{ runner.temp }}/e2e/lighthouse/
           retention-days: 14
+          if-no-files-found: ignore
+      # Full-page screenshots of every checked page (desktop and mobile), for preview.yml.
+      - uses: actions/upload-artifact@v7
+        if: always() && github.event_name == 'pull_request' && steps.contract.outputs.html == 'true' && vars.BROWSER_TESTS != 'off'
+        with:
+          name: screenshots
+          path: ${{ runner.temp }}/e2e/shots/
+          retention-days: 7
           if-no-files-found: ignore
       - name: Container logs
         if: always() && steps.has.outputs.dockerfile == 'true'

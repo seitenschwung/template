@@ -297,13 +297,14 @@ jobs:
           docker logout ghcr.io
           echo "Published ${image}:${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
 
-  # Runs only once the repository variable COOLIFY_APP_UUID is set (see README), so a new
-  # project stays green until its Coolify app exists. Checks out nothing: every command that
-  # sees the deploy secrets is written in this file.
+  # Runs for projects that opted in: the repository variable DEPLOY=auto (`dev` sets it for new
+  # projects, the Coolify project and app are then created here) or, for older projects, a set
+  # COOLIFY_APP_UUID. Anything else stays green without deploying. Checks out nothing: every
+  # command that sees the deploy secrets is written in this file.
   deploy:
     name: Deploy (Coolify)
     needs: [publish]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.COOLIFY_APP_UUID != ''
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != '')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
@@ -313,15 +314,20 @@ jobs:
     env:
       COOLIFY_URL: ${{ vars.COOLIFY_URL || secrets.COOLIFY_URL }}
       COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
-      COOLIFY_APP_UUID: ${{ vars.COOLIFY_APP_UUID }}
-      APP_URL: ${{ vars.APP_URL || secrets.APP_URL }}
+      # Set for older projects with a hand-made Coolify app. Otherwise the app is found or created
+      # by name below, and its UUID and URL are exported as COOLIFY_APP_UUID / APP_URL.
+      CFG_APP_UUID: ${{ vars.COOLIFY_APP_UUID }}
+      CFG_APP_URL: ${{ vars.APP_URL || secrets.APP_URL }}
+      BASE_DOMAIN: ${{ vars.BASE_DOMAIN || 'seitenschwung.com' }}
+      COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
     steps:
       - name: Check configuration
         run: |
           missing=0
-          for name in COOLIFY_URL COOLIFY_TOKEN COOLIFY_APP_UUID APP_URL; do
-            if [ -z "${!name}" ]; then echo "::error::$name is not set (see README: environment \"production\" or repository variables)"; missing=1; fi
+          for name in COOLIFY_URL COOLIFY_TOKEN; do
+            if [ -z "${!name}" ]; then echo "::error::$name is not set (organisation secret/variable, or environment \"production\")"; missing=1; fi
           done
+          if [ -n "$CFG_APP_UUID" ] && [ -z "$CFG_APP_URL" ]; then echo "::error::COOLIFY_APP_UUID is set but APP_URL is not"; missing=1; fi
           exit $missing
 
       - name: Join tailnet
@@ -343,6 +349,60 @@ jobs:
           done
           echo "::error::Coolify not reachable at ${COOLIFY_URL}. Is MagicDNS on, and may tag:ci reach it in the access policy?"
           exit 1
+
+      # The project is named like the repository: one Coolify project with one app per site.
+      # Looked up by name on every run, so nothing has to be stored in the repository settings.
+      - name: Find or create the Coolify app
+        run: |
+          set -uo pipefail
+          if [ -n "$CFG_APP_UUID" ]; then
+            echo "COOLIFY_APP_UUID=${CFG_APP_UUID}" >> "$GITHUB_ENV"; echo "APP_URL=${CFG_APP_URL}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          NAME="${GITHUB_REPOSITORY#*/}"; NAME="${NAME,,}"
+          URL="https://${NAME}.${BASE_DOMAIN}"
+          BASE="${COOLIFY_URL%/}/api/v1"
+          WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+          ( umask 077; printf 'Authorization: Bearer %s\n' "$COOLIFY_TOKEN" > "$WORK/auth" )
+          coolify() {   # coolify METHOD PATH [JSON] -> HTTP status, body in $WORK/body
+            local args=(-sS -o "$WORK/body" -w '%{http_code}' --max-time 30 -X "$1" -H "@$WORK/auth" -H 'Accept: application/json')
+            [ $# -ge 3 ] && args+=(-H 'Content-Type: application/json' --data "$3")
+            curl "${args[@]}" "${BASE}$2" || echo 000
+          }
+          ok() { [ "${1:0:1}" = 2 ]; }
+          fail() { echo "::error::$*"; echo "❌ $*" >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+
+          code=$(coolify GET /applications); ok "$code" || fail "Could not list Coolify applications (HTTP $code)"
+          uuid="$(jq -r --arg n "$NAME" '[.[] | select(.name == $n)][0].uuid // empty' "$WORK/body")"
+          if [ -n "$uuid" ]; then
+            echo "Coolify app ${NAME} exists (${uuid})"
+          else
+            server="$COOLIFY_SERVER_UUID"
+            if [ -z "$server" ]; then
+              code=$(coolify GET /servers); ok "$code" || fail "Could not list Coolify servers (HTTP $code)"
+              [ "$(jq 'length' "$WORK/body")" = 1 ] || fail "Coolify has more than one server: set the organisation variable COOLIFY_SERVER_UUID"
+              server="$(jq -r '.[0].uuid' "$WORK/body")"
+            fi
+            code=$(coolify GET /projects); ok "$code" || fail "Could not list Coolify projects (HTTP $code)"
+            project="$(jq -r --arg n "$NAME" '[.[] | select(.name == $n)][0].uuid // empty' "$WORK/body")"
+            if [ -z "$project" ]; then
+              code=$(coolify POST /projects "$(jq -cn --arg n "$NAME" --arg d "https://github.com/${GITHUB_REPOSITORY}" '{name: $n, description: $d}')")
+              ok "$code" || fail "Could not create the Coolify project (HTTP $code): $(head -c 300 "$WORK/body")"
+              project="$(jq -r '.uuid' "$WORK/body")"
+            fi
+            body="$(jq -cn --arg n "$NAME" --arg p "$project" --arg s "$server" --arg r "https://github.com/${GITHUB_REPOSITORY}" \
+              --arg b "${GITHUB_REF_NAME}" --arg d "${URL}:8080" '{
+                project_uuid: $p, server_uuid: $s, environment_name: "production", name: $n,
+                git_repository: $r, git_branch: $b, build_pack: "dockercompose", ports_exposes: "8080",
+                docker_compose_location: "/docker-compose.yml", is_auto_deploy_enabled: false, instant_deploy: false,
+                docker_compose_domains: [{name: "web", domain: $d}]}')"
+            code=$(coolify POST /applications/public "$body")
+            ok "$code" || fail "Could not create the Coolify app (HTTP $code): $(head -c 400 "$WORK/body")"
+            uuid="$(jq -r '.uuid' "$WORK/body")"
+            echo "Created Coolify project and app ${NAME} (${uuid})"
+            echo "🆕 Created the Coolify project \`${NAME}\` with its app, domain ${URL}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "COOLIFY_APP_UUID=${uuid}" >> "$GITHUB_ENV"; echo "APP_URL=${URL}" >> "$GITHUB_ENV"
 
       - name: Write the deploy script
         run: |

@@ -259,10 +259,10 @@ jobs:
 
       # Exactly this tested image goes to production.
       - name: Hand the tested image to the publish job
-        if: success() && steps.has.outputs.dockerfile == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: success() && steps.has.outputs.dockerfile == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         run: docker save "$IMAGE" | gzip > image.tar.gz
       - uses: actions/upload-artifact@v7
-        if: success() && steps.has.outputs.dockerfile == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: success() && steps.has.outputs.dockerfile == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         with:
           name: tested-image
           path: image.tar.gz
@@ -273,7 +273,7 @@ jobs:
   publish:
     name: Publish image
     needs: [checks, image]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.image.outputs.built == 'true'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.image.outputs.built == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

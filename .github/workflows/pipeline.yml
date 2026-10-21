@@ -386,7 +386,7 @@ jobs:
             code=$(coolify GET /projects); ok "$code" || fail "Could not list Coolify projects (HTTP $code)"
             project="$(jq -r --arg n "$NAME" '[.[] | select(.name == $n)][0].uuid // empty' "$WORK/body")"
             if [ -z "$project" ]; then
-              code=$(coolify POST /projects "$(jq -cn --arg n "$NAME" --arg d "https://github.com/${GITHUB_REPOSITORY}" '{name: $n, description: $d}')")
+              code=$(coolify POST /projects "$(jq -cn --arg n "$NAME" --arg d "GitHub repository ${GITHUB_REPOSITORY}" '{name: $n, description: $d}')")
               ok "$code" || fail "Could not create the Coolify project (HTTP $code): $(head -c 300 "$WORK/body")"
               project="$(jq -r '.uuid' "$WORK/body")"
             fi

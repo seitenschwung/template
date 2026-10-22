@@ -486,7 +486,14 @@ jobs:
             [ "$running" = "$TAG" ] && break
             sleep 5
           done
-          [ "$running" = "$TAG" ] || { error "${APP} runs version '${running:-none}' instead of ${TAG}"; exit 1; }
+          if [ "$running" != "$TAG" ]; then
+            # Say what Coolify thinks: container status and the end of the deployment log.
+            code=$(coolify GET "/applications/${COOLIFY_APP_UUID}")
+            echo "Coolify app status: $(jq -r '.status // "unknown"' "$WORK/body" 2>/dev/null)"
+            code=$(coolify GET "/deployments/${deployment}"); print_log
+            echo "HTTP answer of ${APP}/version.txt: $(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${APP}/version.txt" || echo 000)"
+            error "${APP} runs version '${running:-none}' instead of ${TAG}"; exit 1
+          fi
           code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${APP}/healthz" || echo 000)
           [ "$code" = 200 ] || { error "${APP}/healthz answers HTTP $code"; exit 1; }
           summary "✅ Running \`${TAG}\` on ${APP}"

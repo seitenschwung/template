@@ -60,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          command -v compare > /dev/null || sudo apt-get install -y -qq imagemagick > /dev/null
+          command -v compare > /dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick; } > /dev/null
           short="${SHA:0:7}"
           run_url="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
           public="$(gh api "repos/${REPO}" --jq '.private | not')"

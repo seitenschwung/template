@@ -26,5 +26,5 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: seitenschwung/template/.github/workflows/preview.yml@v1
+    uses: seitenschwung/template/.github/workflows/preview.yml@preview-apt-timeout
     secrets: inherit

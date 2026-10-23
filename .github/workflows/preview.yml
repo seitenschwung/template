@@ -60,7 +60,23 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          command -v compare > /dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick; } > /dev/null
+          # ImageMagick is not in the runner image. apt usually takes ~20 s but sometimes hangs for
+          # 10+ minutes, so: no recommends, no man-db rebuild, a time limit, one retry, and if it still
+          # fails the preview is skipped with a warning instead of failing the run.
+          install_im() {
+            sudo rm -f /var/lib/man-db/auto-update
+            local a
+            for a in 1 2; do
+              timeout 90 sudo apt-get update -qq -o Acquire::Retries=2 &&
+                timeout 90 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l \
+                  apt-get install -y -qq --no-install-recommends -o DPkg::Lock::Timeout=30 imagemagick &&
+                return 0
+              echo "apt attempt $a failed or timed out" >&2
+            done
+            return 1
+          }
+          command -v compare > /dev/null || install_im > /dev/null ||
+            { echo "::warning::ImageMagick could not be installed in time (apt too slow), no preview this run"; exit 0; }
           short="${SHA:0:7}"
           run_url="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
           public="$(gh api "repos/${REPO}" --jq '.private | not')"

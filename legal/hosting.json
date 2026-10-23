@@ -1,0 +1,12 @@
+{
+  "_hinweis": "Gilt für alle Seiten. null heißt: noch nicht geklärt. Solange ein Wert null ist, deployt die Pipeline keine Seite mit legal.json (außer mit der Repo-Variable LEGAL_DRAFT=true).",
+  "hoster": "Hetzner Online GmbH, Industriestr. 25, 91710 Gunzenhausen, Deutschland",
+  "standort": "Rechenzentrum in Nürnberg, Deutschland",
+  "betrieb": {
+    "name": "seitenschwung, Philipp Nirnberger",
+    "anschrift": null
+  },
+  "log_tage": null,
+  "av_vertraege": null,
+  "crowdsec_meldet_ips": null
+}

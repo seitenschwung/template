@@ -5,7 +5,7 @@ name: Preview
 #
 # The pipeline takes full-page screenshots of every page it tests (desktop and mobile).
 #  - On main: the desktop shots become the baseline (folder `main/` on the branch `pr-previews`).
-#  - On a PR: every page is compared with that baseline. One sticky comment shows only the pages
+#  - On a PR labelled `manual-review` (the box sets it when a human should look): every page is compared with that baseline. One sticky comment shows only the pages
 #    that changed (before | after), at most 6; the rest is counted. Without a baseline yet it shows
 #    the start page. Mobile shots stay in the `screenshots` artifact of the run, they are not
 #    stored on the branch.
@@ -122,7 +122,14 @@ jobs:
             exit 0
           fi
 
-          # 3. Pull request: which pages differ from the baseline?
+          # 3. Pull request: only PRs the box (or the owner) labelled `manual-review` get a comment. The
+          #    label is read live, not from the event, so it counts even if it was added after the start.
+          labels="$(gh api "repos/${REPO}/issues/${PR}/labels" --jq '.[].name' || true)"
+          if ! grep -qx 'manual-review' <<<"$labels"; then
+            echo "No manual-review label on #${PR}: no screenshots needed."
+            exit 0
+          fi
+          # Which pages differ from the baseline?
           git fetch -q origin pr-previews 2>/dev/null && git checkout -q -f FETCH_HEAD || true
           have_baseline=false; [ -d main ] && have_baseline=true
           changed=(); new=(); same=0

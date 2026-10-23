@@ -47,5 +47,12 @@ managed by the owner. You can't change workflow files, so build the project to f
   the tested image to ghcr.io and tells Coolify which tag to run.
 - `main` is production: every merge deploys after green CI. Work on branches, open PRs.
 
+## Impressum and Datenschutz
+Never write them by hand. Fill in `legal.json` (details from the owner/customer, never invented),
+optionally a `legal-layout.html` in the site's design; CI generates both pages. Every page links to
+`impressum.html` and `datenschutz.html`. A new external service (map, video, font CDN, form service)
+needs a building block in seitenschwung/template `legal/`: ask the owner, don't work around it.
+Details: `legal/README.md` in seitenschwung/template.
+
 ## Conventions
 TODO: code style, language of the UI, anything the owner insists on.

@@ -22,6 +22,9 @@ concurrency:
 
 env:
   IMAGE: app:ci
+  # Version of the legal text blocks (legal/ in this repository) that projects use. Moves with the
+  # caller's tag; the template itself always uses its own checkout.
+  LEGAL_KIT_REF: v1
 
 jobs:
   checks:
@@ -55,6 +58,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       built: ${{ steps.has.outputs.dockerfile }}
+      legal: ${{ steps.legal.outputs.state }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -64,6 +68,38 @@ jobs:
         run: |
           if [ -f Dockerfile ]; then echo "dockerfile=true" >> "$GITHUB_OUTPUT"
           else echo "dockerfile=false" >> "$GITHUB_OUTPUT"; echo "No Dockerfile yet, nothing to build or deploy."; fi
+
+      # Impressum and Datenschutz from the project's legal.json and the shared text blocks in legal/
+      # of seitenschwung/template (see legal/README.md there). Written into the static folder before
+      # the build, so they are part of the tested image. Missing details don't fail the build, they
+      # block the production deploy. Projects without legal.json are left alone.
+      - name: Legal pages (Impressum, Datenschutz)
+        id: legal
+        if: steps.has.outputs.dockerfile == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/e2e"
+          if [ ! -f legal.json ]; then
+            echo "state=none" >> "$GITHUB_OUTPUT"
+            echo "::notice::No legal.json: Impressum and Datenschutz are neither generated nor checked (see legal/README.md in seitenschwung/template)."
+            exit 0
+          fi
+          if [ "$GITHUB_REPOSITORY" = seitenschwung/template ]; then
+            kit=legal
+          else
+            git clone -q --depth 1 --branch "$LEGAL_KIT_REF" https://github.com/seitenschwung/template "$RUNNER_TEMP/template"
+            kit="$RUNNER_TEMP/template/legal"
+          fi
+          status="$RUNNER_TEMP/e2e/legal-status.json"
+          node "$kit/render.mjs" . --status "$status"
+          if jq -e '.vollstaendig' "$status" > /dev/null; then
+            echo "state=complete" >> "$GITHUB_OUTPUT"
+            echo "✅ Impressum and Datenschutz generated, all details present" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "state=incomplete" >> "$GITHUB_OUTPUT"
+            { echo "### ⚠️ Impressum/Datenschutz incomplete: no production deploy until filled in"
+              jq -r '.fehlend[] | "- " + .' "$status"; } >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.fehlend[]' "$status" | while IFS= read -r line; do echo "::warning title=Legal details missing::${line}"; done
+          fi
 
       # Stack-agnostic tests: a Dockerfile can define a stage named "test" (lint, unit tests).
       # A failing stage fails the pipeline. The final image does not contain it.
@@ -135,13 +171,21 @@ jobs:
           cat > site.spec.mjs <<'EOF'
           import { test, expect } from '@playwright/test';
           import AxeBuilder from '@axe-core/playwright';
-          import { mkdirSync } from 'node:fs';
+          import { mkdirSync, existsSync, readFileSync } from 'node:fs';
 
           const ORIGIN = new URL(process.env.BASE_URL).origin;
           const MAX_PAGES = 25;
+          // Written by the "Legal pages" step when the project has a legal.json: the hosts and cookies
+          // its legal texts cover, and the generated pages.
+          const LEGAL = existsSync('legal-status.json') ? JSON.parse(readFileSync('legal-status.json', 'utf8')) : null;
+          const foreign = new Map();   // host -> first URL requested from it
 
           function watch(page) {
             const problems = [];
+            page.on('request', (r) => {
+              const u = new URL(r.url());
+              if (/^https?:$/.test(u.protocol) && u.origin !== ORIGIN && !foreign.has(u.hostname)) foreign.set(u.hostname, r.url());
+            });
             page.on('console', (m) => { if (m.type() === 'error') problems.push(`console error: ${m.text()}`); });
             page.on('pageerror', (e) => problems.push(`uncaught exception: ${e.message}`));
             page.on('requestfailed', (r) => {
@@ -201,17 +245,35 @@ jobs:
 
           test('all pages: load cleanly, fit the screen, accessible', async ({ page }, testInfo) => {
             const seen = new Set();
-            const queue = ['/'];
+            const queue = ['/', ...(LEGAL ? LEGAL.seiten.map((s) => `/${s}`) : [])];
             while (queue.length && seen.size < MAX_PAGES) {
               const path = queue.shift();
               if (seen.has(path)) continue;
               seen.add(path);
-              for (const href of await checkPage(page, path, testInfo)) {
+              const hrefs = await checkPage(page, path, testInfo);
+              for (const href of hrefs) {
                 const u = new URL(href);
                 if (u.origin === ORIGIN && !seen.has(u.pathname) && !/\.(pdf|zip|jpe?g|png|webp|avif|gif|svg|mp4|webm|txt|xml|json)$/i.test(u.pathname)) queue.push(u.pathname);
               }
+              // Impressum and Datenschutz must be one click away from every page.
+              if (LEGAL) for (const name of ['impressum', 'datenschutz']) {
+                const linked = hrefs.some((href) => { const u = new URL(href); return u.origin === ORIGIN && new RegExp(`/${name}(\\.html)?/?$`).test(u.pathname); });
+                expect.soft(linked, `${path} links to ${name}.html`).toBe(true);
+              }
             }
             console.log(`checked ${seen.size} page(s): ${[...seen].join(', ')}`);
+
+            // Data protection: every other host and every cookie must be covered by a building block
+            // in legal.json, otherwise the Datenschutzerklärung would not match the site.
+            const cookies = (await page.context().cookies()).map((c) => `${c.name} (${c.domain})`);
+            console.log(`requests to other hosts: ${[...foreign.keys()].join(', ') || 'none'}; cookies: ${cookies.join(', ') || 'none'}`);
+            if (LEGAL) {
+              const covered = (host) => LEGAL.hosts.some((a) => host === a || host.endsWith(`.${a}`));
+              const hosts = [...foreign].filter(([host]) => !covered(host)).map(([host, url]) => `${host} (${url.slice(0, 100)})`);
+              expect.soft(hosts, 'requests to other hosts that no building block in legal.json covers: add the block or remove the service').toEqual([]);
+              const unknown = (await page.context().cookies()).filter((c) => !LEGAL.cookies.some((re) => new RegExp(re).test(c.name))).map((c) => `${c.name} (${c.domain})`);
+              expect.soft(unknown, 'cookies that no building block in legal.json covers').toEqual([]);
+            }
           });
           EOF
           cat > lighthouse-check.mjs <<'EOF'
@@ -318,7 +380,7 @@ jobs:
   # command that sees the deploy secrets is written in this file.
   deploy:
     name: Deploy (Coolify)
-    needs: [publish]
+    needs: [image, publish]
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != '')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -336,10 +398,17 @@ jobs:
       BASE_DOMAIN: ${{ vars.BASE_DOMAIN || 'seitenschwung.com' }}
       APP_DOMAIN: ${{ vars.APP_DOMAIN }}   # optional: full host name instead of <repo>.<BASE_DOMAIN> (dev --domain)
       COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
+      LEGAL_STATE: ${{ needs.image.outputs.legal }}
+      LEGAL_DRAFT: ${{ vars.LEGAL_DRAFT }}
     steps:
       - name: Check configuration
         run: |
           missing=0
+          # Repository variable LEGAL_DRAFT=true lets a draft go live with visibly marked gaps.
+          if [ "$LEGAL_STATE" = incomplete ] && [ "$LEGAL_DRAFT" != true ]; then
+            echo "::error::Impressum/Datenschutz are incomplete (list in the summary of the image job). Fill in legal.json, or set the repository variable LEGAL_DRAFT=true for a draft site."
+            missing=1
+          fi
           for name in COOLIFY_URL COOLIFY_TOKEN; do
             if [ -z "${!name}" ]; then echo "::error::$name is not set (organisation secret/variable, or environment \"production\")"; missing=1; fi
           done

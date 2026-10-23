@@ -457,9 +457,12 @@ jobs:
           code=$(coolify PATCH "/applications/${COOLIFY_APP_UUID}" "$(jq -cn --arg v "$TAG" '{git_commit_sha: $v}')")
           ok "$code" || echo "::warning::Could not pin the commit in Coolify (HTTP $code), the compose file may come from the branch head."
 
-          # 2. Deploy and follow it.
+          # 2. Deploy and follow it. If the new build does not answer (Coolify says healthy, the proxy
+          #    still has no server), deploy once more with force=true, which recreates the containers.
+          for attempt in 1 2; do
+          force=false; [ "$attempt" = 2 ] && force=true
           for method in POST GET; do
-            code=$(coolify "$method" "/deploy?uuid=${COOLIFY_APP_UUID}&force=false")
+            code=$(coolify "$method" "/deploy?uuid=${COOLIFY_APP_UUID}&force=${force}")
             [ "$code" = 405 ] || break
           done
           ok "$code" || { error "Coolify refused the deployment (HTTP $code): $(head -c 300 "$WORK/body")"; exit 1; }
@@ -493,8 +496,11 @@ jobs:
             echo "Coolify app status: $(jq -r '.status // "unknown"' "$WORK/body" 2>/dev/null)"
             code=$(coolify GET "/deployments/${deployment}"); print_log
             echo "HTTP answer of ${APP}/version.txt: $(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${APP}/version.txt" || echo 000)"
+            [ "$attempt" = 1 ] && { echo "::warning::${APP} answers '${running:-none}', not ${TAG}: deploying again with force=true"; continue; }
             error "${APP} runs version '${running:-none}' instead of ${TAG}"; exit 1
           fi
+          break
+          done
           code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${APP}/healthz" || echo 000)
           [ "$code" = 200 ] || { error "${APP}/healthz answers HTTP $code"; exit 1; }
           summary "✅ Running \`${TAG}\` on ${APP}"

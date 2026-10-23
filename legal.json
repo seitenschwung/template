@@ -1,0 +1,26 @@
+{
+  "land": "AT",
+  "art": "unternehmen",
+  "ausgabe": "public",
+  "betreiber": {
+    "name": "",
+    "rechtsform": "",
+    "vertreten_durch": "",
+    "unternehmensgegenstand": "",
+    "anschrift": "",
+    "email": "",
+    "telefon": "",
+    "uid": "",
+    "firmenbuch": "",
+    "kammer": "",
+    "berufsrecht": "",
+    "gewerbebehoerde": ""
+  },
+  "aufsichtsbehoerde": "",
+  "blattlinie": "",
+  "redaktion_verantwortlich": "",
+  "bausteine": ["kontakt-mail"],
+  "eigene_abschnitte": [],
+  "bildnachweise": [],
+  "stand": ""
+}

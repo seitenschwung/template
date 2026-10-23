@@ -31,6 +31,7 @@ deploys the tested image and checks `/version.txt` and `/healthz`. The box only 
 Once for the organisation (owner):
 - organisation secrets `COOLIFY_TOKEN` (API token with read, write and deploy), `TS_OAUTH_CLIENT_ID`,
   `TS_OAUTH_SECRET` (Tailscale OAuth client with tag `tag:ci`); organisation variable `COOLIFY_URL`
+- optional repo variable `APP_DOMAIN` (full host name, e.g. `www.example.com`; set by `dev --domain`) replaces `<repo>.<BASE_DOMAIN>` when the app is created
 - optional organisation variables `BASE_DOMAIN` (default `seitenschwung.com`) and `COOLIFY_SERVER_UUID`
   (needed only if Coolify has more than one server)
 - a wildcard DNS record `*.<BASE_DOMAIN>` pointing at the server

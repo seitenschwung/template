@@ -334,6 +334,7 @@ jobs:
       CFG_APP_UUID: ${{ vars.COOLIFY_APP_UUID }}
       CFG_APP_URL: ${{ vars.APP_URL || secrets.APP_URL }}
       BASE_DOMAIN: ${{ vars.BASE_DOMAIN || 'seitenschwung.com' }}
+      APP_DOMAIN: ${{ vars.APP_DOMAIN }}   # optional: full host name instead of <repo>.<BASE_DOMAIN> (dev --domain)
       COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
     steps:
       - name: Check configuration
@@ -375,7 +376,7 @@ jobs:
             exit 0
           fi
           NAME="${GITHUB_REPOSITORY#*/}"; NAME="${NAME,,}"
-          URL="https://${NAME}.${BASE_DOMAIN}"
+          URL="https://${APP_DOMAIN:-${NAME}.${BASE_DOMAIN}}"
           BASE="${COOLIFY_URL%/}/api/v1"
           WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
           ( umask 077; printf 'Authorization: Bearer %s\n' "$COOLIFY_TOKEN" > "$WORK/auth" )

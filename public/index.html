@@ -5,12 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Project template demo</title>
   <meta name="description" content="Demo page of the project template. It passes the pipeline checks and is meant to be replaced.">
+  <!-- SEO: replace https://example.com with the production URL here, in robots.txt and in sitemap.xml -->
+  <link rel="canonical" href="https://example.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Project template demo">
+  <meta property="og:description" content="Demo page of the project template. It passes the pipeline checks and is meant to be replaced.">
+  <meta property="og:url" content="https://example.com/">
+  <meta property="og:image" content="https://example.com/og.png">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
     body { margin: 0; font: 1.125rem/1.6 system-ui, sans-serif; color: #1b1b1b; background: #fff; }
     main { max-width: 40rem; margin: 0 auto; padding: 3rem 1.25rem; }
     h1 { line-height: 1.2; }
     a { color: #0b4f9c; }
+    footer { max-width: 40rem; margin: 0 auto; padding: 0 1.25rem 3rem; }
   </style>
 </head>
 <body>
@@ -20,5 +28,8 @@
        contract: port 8080, <code>/healthz</code> and <code>/version.txt</code>.</p>
     <p>Replace this site with the real project. The pipeline keeps checking it the same way.</p>
   </main>
+  <footer>
+    <a href="impressum.html">Impressum</a> · <a href="datenschutz.html">Datenschutz</a>
+  </footer>
 </body>
 </html>

@@ -14,7 +14,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: seitenschwung/template/.github/workflows/pipeline.yml@legal-texts
+    uses: seitenschwung/template/.github/workflows/pipeline.yml@v1
     secrets: inherit
 
   # Screenshots (optional; delete this job to go without): main keeps the baseline, a PR gets a comment
@@ -26,5 +26,5 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: seitenschwung/template/.github/workflows/preview.yml@legal-texts
+    uses: seitenschwung/template/.github/workflows/preview.yml@v1
     secrets: inherit

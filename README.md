@@ -23,6 +23,28 @@ This repository's CI runs the demo through the pipeline, so a green run is the t
 
 Replace this README with one about the project.
 
+## Browser tests
+
+When `/` returns HTML, the pipeline crawls up to 25 linked pages on desktop and mobile:
+status 200, title, `lang`, viewport, no horizontal overflow, no broken images, no console errors,
+axe (WCAG 2.1 AA, serious and critical findings fail), Impressum/Datenschutz linked from every page,
+other hosts and cookies covered by `legal.json`. Lighthouse checks `/` (accessibility, best
+practices and SEO at least 90; performance only reported).
+
+SEO and page weight, on the desktop run, for every page without `noindex`:
+- `<title>` unique, at most 60 characters; `<meta name="description">` unique, 50 to 160 characters;
+- exactly one `<h1>`, no skipped heading level (h2 → h4);
+- `<link rel="canonical">` pointing at the page's own path (the domain is not compared);
+- `og:title`, `og:description`, `og:image`, and the image path answers 200 in this build;
+- `/robots.txt` answers 200 and does not `Disallow: /` for `*`; `/sitemap.xml` (or one level of
+  sitemap index) answers 200, every URL in it answers 200 and is linked from the site, and every
+  indexable page is in it;
+- at most 1.5 MB loaded per page (after scrolling to the end), 300 KB per image.
+
+They are warnings (step "SEO findings", the run summary, `seo-findings.txt` in the `browser-tests`
+artifact) until the repository variable `SEO_STRICT=on` is set; then they fail the browser tests.
+Turn it on per project once its warnings are fixed.
+
 ## Setting up the deploy
 
 `dev <name>` does this for a new project: it sets the repository variable `DEPLOY=auto` and starts
@@ -39,7 +61,8 @@ Once for the organisation (owner):
 - a wildcard DNS record `*.<BASE_DOMAIN>` pointing at the server
 
 Per project, optional repository variables: `DEPLOY=off` (or unset) for no deploy at all,
-`BROWSER_TESTS=off` for a project without a web UI. Repositories must be public, because Coolify
+`BROWSER_TESTS=off` for a project without a web UI, `SEO_STRICT=on` to make the SEO and page-weight
+findings fail the build (default: they are warnings in the run and its summary; see "Browser tests"). Repositories must be public, because Coolify
 clones them without credentials. Older projects with a hand-made Coolify app keep working with the
 repository variables `COOLIFY_APP_UUID` and `APP_URL`. This template and the other blueprints do
 not set `DEPLOY`, so they never create an app.

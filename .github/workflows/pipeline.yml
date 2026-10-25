@@ -171,7 +171,7 @@ jobs:
           cat > site.spec.mjs <<'EOF'
           import { test, expect } from '@playwright/test';
           import AxeBuilder from '@axe-core/playwright';
-          import { mkdirSync, existsSync, readFileSync } from 'node:fs';
+          import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
           const ORIGIN = new URL(process.env.BASE_URL).origin;
           const MAX_PAGES = 25;
@@ -179,6 +179,107 @@ jobs:
           // its legal texts cover, and the generated pages.
           const LEGAL = existsSync('legal-status.json') ? JSON.parse(readFileSync('legal-status.json', 'utf8')) : null;
           const foreign = new Map();   // host -> first URL requested from it
+
+          // SEO and page weight, checked on the desktop run. Findings are warnings (step "SEO findings")
+          // unless the repository variable SEO_STRICT=on makes them fail. Pages with noindex (the generated
+          // Impressum and Datenschutz) are skipped.
+          const SEO_STRICT = process.env.SEO_STRICT === 'on';
+          const PAGE_BUDGET_KB = 1536;   // everything one page loads, after scrolling to the end
+          const IMAGE_BUDGET_KB = 300;   // any single image
+          const seo = [];
+          const titles = new Map();      // title -> first path
+          const descriptions = new Map();
+          const indexable = new Set();   // normalised paths without noindex
+          const norm = (p) => (p.replace(/\/index\.html$/, '/').replace(/\.html$/, '').replace(/(.)\/$/, '$1')) || '/';
+
+          async function seoPage(page, path) {
+            const add = (msg) => seo.push(`${path}: ${msg}`);
+            const m = await page.evaluate(() => {
+              const get = (sel, attr = 'content') => document.querySelector(sel)?.getAttribute(attr)?.trim() ?? null;
+              return {
+                title: document.title.trim(), description: get('meta[name="description"]'), robots: get('meta[name="robots"]') ?? '',
+                canonical: get('link[rel="canonical"]', 'href'), ogTitle: get('meta[property="og:title"]'),
+                ogDescription: get('meta[property="og:description"]'), ogImage: get('meta[property="og:image"]'),
+                h1: document.querySelectorAll('h1').length,
+                levels: [...document.querySelectorAll('h1, h2, h3, h4, h5, h6')].map((h) => Number(h.tagName[1])),
+              };
+            });
+            if (/noindex/i.test(m.robots)) return;
+            indexable.add(norm(path));
+            if (m.title.length > 60) add(`title has ${m.title.length} characters (at most 60 show in search results)`);
+            if (titles.has(m.title)) add(`same title as ${titles.get(m.title)}: "${m.title}"`); else titles.set(m.title, path);
+            if (!m.description) add('no <meta name="description">');
+            else {
+              if (m.description.length < 50 || m.description.length > 160) add(`description has ${m.description.length} characters (50 to 160)`);
+              if (descriptions.has(m.description)) add(`same description as ${descriptions.get(m.description)}`); else descriptions.set(m.description, path);
+            }
+            if (m.h1 !== 1) add(`${m.h1} <h1> elements (exactly 1)`);
+            for (let i = 1; i < m.levels.length; i++) {
+              if (m.levels[i] > m.levels[i - 1] + 1) { add(`heading level skipped: h${m.levels[i - 1]} → h${m.levels[i]}`); break; }
+            }
+            if (!m.canonical) add('no <link rel="canonical">');
+            else if (norm(new URL(m.canonical, page.url()).pathname) !== norm(path)) add(`canonical points to ${m.canonical}`);
+            for (const [k, v] of [['og:title', m.ogTitle], ['og:description', m.ogDescription], ['og:image', m.ogImage]]) if (!v) add(`no <meta property="${k}">`);
+            if (m.ogImage) {   // the URL names the production domain: fetch the same path from this build
+              const r = await page.request.get(ORIGIN + new URL(m.ogImage, page.url()).pathname);
+              if (r.status() !== 200) add(`og:image ${m.ogImage} answers ${r.status()}`);
+            }
+          }
+
+          async function weighPage(page, path) {
+            const w = await page.evaluate(() => {
+              const size = (e) => Math.max(e.transferSize || 0, e.encodedBodySize || 0);
+              const nav = performance.getEntriesByType('navigation')[0];
+              const res = performance.getEntriesByType('resource');
+              return {
+                total: (nav ? size(nav) : 0) + res.reduce((sum, e) => sum + size(e), 0),
+                images: res.filter((e) => e.initiatorType === 'img' || /\.(jpe?g|png|webp|avif|gif|svg)(\?|$)/i.test(e.name)).map((e) => [e.name, size(e)]),
+              };
+            });
+            const kb = (b) => Math.round(b / 1024);
+            if (kb(w.total) > PAGE_BUDGET_KB) seo.push(`${path}: page loads ${kb(w.total)} KB (budget ${PAGE_BUDGET_KB} KB)`);
+            for (const [url, b] of w.images) if (kb(b) > IMAGE_BUDGET_KB) seo.push(`${path}: image ${url.slice(0, 120)} is ${kb(b)} KB (budget ${IMAGE_BUDGET_KB} KB)`);
+          }
+
+          async function seoSite(page, seen) {
+            const add = (msg) => seo.push(msg);
+            const robots = await page.request.get('/robots.txt');
+            if (robots.status() !== 200) add(`/robots.txt answers ${robots.status()}`);
+            else {
+              let all = false;   // inside a group for "User-agent: *"
+              for (const raw of (await robots.text()).split(/\r?\n/)) {
+                const line = raw.replace(/#.*/, '').trim();
+                const i = line.indexOf(':');
+                if (i < 0) continue;
+                const key = line.slice(0, i).trim().toLowerCase(), val = line.slice(i + 1).trim();
+                if (key === 'user-agent') all = val === '*';
+                else if (all && key === 'disallow' && val === '/') add('/robots.txt blocks the whole site (Disallow: /)');
+              }
+            }
+            const locs = [];
+            const sitemap = await page.request.get('/sitemap.xml');
+            if (sitemap.status() !== 200) { add(`/sitemap.xml answers ${sitemap.status()}`); return; }
+            const loc = (xml) => [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)].map((x) => x[1]);
+            const xml = await sitemap.text();
+            if (/<sitemapindex/.test(xml)) {   // one level of sitemap index
+              for (const child of loc(xml)) {
+                const r = await page.request.get(new URL(child).pathname);
+                if (r.status() !== 200) add(`sitemap ${child} answers ${r.status()}`); else locs.push(...loc(await r.text()));
+              }
+            } else locs.push(...loc(xml));
+            if (!locs.length) { add('/sitemap.xml lists no <loc>'); return; }
+            const crawled = new Set([...seen].map(norm));
+            const listed = new Set();
+            for (const u of locs) {
+              let path;
+              try { path = new URL(u).pathname; } catch { add(`sitemap.xml: not an absolute URL: ${u}`); continue; }
+              listed.add(norm(path));
+              const r = await page.request.get(path);
+              if (r.status() !== 200) add(`sitemap.xml: ${u} answers ${r.status()}`);
+              else if (seen.size < MAX_PAGES && !crawled.has(norm(path))) add(`sitemap.xml: ${u} is not linked from the site`);
+            }
+            for (const p of indexable) if (!listed.has(p)) add(`${p}: missing in /sitemap.xml`);
+          }
 
           function watch(page) {
             const problems = [];
@@ -217,9 +318,11 @@ jobs:
             await expect.soft(page, `${path} has a title`).toHaveTitle(/\S/);
             expect.soft(await page.getAttribute('html', 'lang'), `${path} <html lang>`).toBeTruthy();
             expect.soft(await page.locator('meta[name="viewport"]').count(), `${path} viewport meta`).toBe(1);
+            if (testInfo.project.name === 'desktop') await seoPage(page, path);
 
             await testInfo.attach(`${path} top`, { body: await page.screenshot(), contentType: 'image/png' });
             await scrollThrough(page);
+            if (testInfo.project.name === 'desktop') await weighPage(page, path);
 
             // Full-page shot for the PR preview comment (see preview.yml), one per viewport and page.
             mkdirSync('shots', { recursive: true });
@@ -263,6 +366,13 @@ jobs:
             }
             console.log(`checked ${seen.size} page(s): ${[...seen].join(', ')}`);
 
+            if (testInfo.project.name === 'desktop') {
+              await seoSite(page, seen);
+              writeFileSync('seo-findings.txt', seo.map((f) => `${f}\n`).join(''));
+              console.log(`SEO: ${seo.length} finding(s)${SEO_STRICT ? ' (SEO_STRICT=on: they fail)' : ''}`);
+              if (SEO_STRICT) expect.soft(seo, 'SEO findings (repository variable SEO_STRICT=on)').toEqual([]);
+            }
+
             // Data protection: every other host and every cookie must be covered by a building block
             // in legal.json, otherwise the Datenschutzerklärung would not match the site.
             const cookies = (await page.context().cookies()).map((c) => `${c.name} (${c.domain})`);
@@ -294,9 +404,11 @@ jobs:
           EOF
       - name: Browser tests (Playwright + axe, desktop and mobile) and Lighthouse
         if: steps.contract.outputs.html == 'true' && vars.BROWSER_TESTS != 'off'
+        env:
+          SEO_STRICT: ${{ vars.SEO_STRICT }}
         run: |
           docker run --rm --ipc=host --network host -v "$RUNNER_TEMP/e2e:/e2e" -w /e2e \
-            -e CI=true -e BASE_URL=http://127.0.0.1:8080 \
+            -e CI=true -e BASE_URL=http://127.0.0.1:8080 -e SEO_STRICT \
             mcr.microsoft.com/playwright:v1.63.0-noble sh -c '
               set -e
               npm init -y > /dev/null
@@ -311,6 +423,20 @@ jobs:
                 --output=json --output=html --output-path=./lighthouse/report
               node lighthouse-check.mjs || status=1
               exit $status'
+      # Per-page SEO and page weight (written by the desktop run): warnings in the run and its summary.
+      # The repository variable SEO_STRICT=on turns them into errors that fail the browser tests.
+      - name: SEO findings
+        if: always() && steps.contract.outputs.html == 'true' && vars.BROWSER_TESTS != 'off'
+        env:
+          SEO_STRICT: ${{ vars.SEO_STRICT }}
+        run: |
+          f="$RUNNER_TEMP/e2e/seo-findings.txt"
+          if [ ! -f "$f" ]; then echo "No SEO report: the browser tests stopped before the end."; exit 0; fi
+          if [ ! -s "$f" ]; then echo "✅ SEO and page weight: no findings" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          level=warning; note=" (warnings; the repository variable SEO_STRICT=on makes them fail)"
+          if [ "${SEO_STRICT:-}" = on ]; then level=error; note=""; fi
+          { echo "### SEO and page weight: $(wc -l < "$f" | tr -d " ") finding(s)${note}"; sed 's/^/- /' "$f"; } >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r line; do echo "::${level} title=SEO::${line//%/%25}"; done < "$f"
       - uses: actions/upload-artifact@v7
         if: always() && steps.contract.outputs.html == 'true' && vars.BROWSER_TESTS != 'off'
         with:
@@ -319,6 +445,7 @@ jobs:
             ${{ runner.temp }}/e2e/report/
             ${{ runner.temp }}/e2e/results/
             ${{ runner.temp }}/e2e/lighthouse/
+            ${{ runner.temp }}/e2e/seo-findings.txt
           retention-days: 14
           if-no-files-found: ignore
       # Full-page screenshots of every checked page (desktop and mobile), for preview.yml: PRs are compared

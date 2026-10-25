@@ -10,7 +10,8 @@ contract below and keeps CI green. Replace them with the real project (or adapt 
 this section.
 
 ## Purpose
-TODO: what this project is, for whom, and the production URL.
+TODO: what this project is, for whom, and the production URL (also in canonical, og:url,
+og:image, `public/robots.txt` and `public/sitemap.xml`, which still say https://example.com).
 
 ## Stack
 TODO: language, framework, database, notable libraries.
@@ -37,6 +38,12 @@ managed by the owner. You can't change workflow files, so build the project to f
   - serve `GET /version.txt` with the build argument `APP_VERSION` (the commit SHA)
 - If `/` returns HTML, CI also crawls the site with Playwright, axe (WCAG AA, serious and
   critical findings fail) and Lighthouse (accessibility, best practices and SEO at least 90).
+- SEO on every indexable page (warnings, failures once the owner sets `SEO_STRICT=on`): a unique
+  `<title>` (at most 60 characters) and `<meta name="description">` (50 to 160), exactly one `<h1>`,
+  no skipped heading levels, `<link rel="canonical">` to the page itself, `og:title`,
+  `og:description`, `og:image` (must exist). `/robots.txt` must not block the site, `/sitemap.xml`
+  lists every indexable page and only those. Page weight: at most 1.5 MB per page, 300 KB per image.
+  The demo uses `https://example.com`: replace it with the production URL (see the TODO above).
 - A Dockerfile stage named `test` (`FROM ... AS test`) is built first: put lint and tests there for
   stacks without `package-lock.json`. It must not be the last stage.
 - `docker-compose.yml` keeps the CrowdSec labels (`crowdsec.enable=true`,

@@ -4,9 +4,9 @@
   "standort": "Rechenzentrum in Nürnberg, Deutschland",
   "betrieb": {
     "name": "seitenschwung, Philipp Nirnberger",
-    "anschrift": null
+    "anschrift": "Wühren 35, 24794 Bünsdorf, Deutschland"
   },
   "log_tage": null,
-  "av_vertraege": null,
+  "av_vertraege": true,
   "crowdsec_meldet_ips": null
 }

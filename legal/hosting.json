@@ -6,7 +6,7 @@
     "name": "seitenschwung, Philipp Nirnberger",
     "anschrift": "Wühren 35, 24794 Bünsdorf, Deutschland"
   },
-  "log_tage": null,
+  "log_tage": 14,
   "av_vertraege": true,
-  "crowdsec_meldet_ips": null
+  "crowdsec_meldet_ips": true
 }

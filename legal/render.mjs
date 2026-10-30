@@ -50,6 +50,9 @@ for (const id of gewaehlt) if (!BAUSTEINE[id]) abbruch(`unbekannter Baustein "${
 const name = pflicht(b.name, 'Name bzw. Firma des Betreibers');
 const anschrift = pflicht(b.anschrift, 'Anschrift des Betreibers');
 const email = pflicht(b.email, 'E-Mail-Adresse des Betreibers');
+// Betreibt der technische Dienstleister seine eigene Seite (seitenschwung.com), beauftragt er niemanden:
+// dann entfallen der Abschnitt zum Betrieb im Impressum und die Auftragsverarbeitung mit sich selbst.
+const eigenbetrieb = !leer(b.name) && String(hosting.betrieb?.name ?? '').includes(String(b.name).trim());
 
 // ---------- Impressum ----------
 function impressum() {
@@ -75,7 +78,7 @@ function impressum() {
   else teile.push(zeile('Verantwortlich für den Inhalt nach § 18 Abs. 2 MStV', cfg.redaktion_verantwortlich));
   if (!leer(cfg.verbraucherschlichtung)) teile.push(`<h2>Verbraucherschlichtung</h2><p>${zeilen(cfg.verbraucherschlichtung)}</p>`);
   if (!leer(cfg.bildnachweise)) teile.push(`<h2>Bildnachweise</h2><ul>${cfg.bildnachweise.map((x) => `<li>${h(x)}</li>`).join('')}</ul>`);
-  teile.push(`<h2>Technische Umsetzung und Betrieb</h2><p>${h(hosting.betrieb.name)}</p>`);
+  if (!eigenbetrieb) teile.push(`<h2>Technische Umsetzung und Betrieb</h2><p>${h(hosting.betrieb.name)}</p>`);
   return teile.filter(Boolean).join('\n');
 }
 
@@ -93,9 +96,13 @@ function datenschutz() {
 
   const q = 'legal/hosting.json im Template';
   const tage = leer(hosting.log_tage) ? pflicht(null, 'Speicherdauer der Logfiles in Tagen', q) : h(hosting.log_tage);
-  const av = hosting.av_vertraege === true
-    ? 'Mit beiden bestehen Verträge zur Auftragsverarbeitung nach Art. 28 DSGVO.'
-    : pflicht(null, 'Verträge zur Auftragsverarbeitung bestätigt', q);
+  const av = hosting.av_vertraege !== true
+    ? pflicht(null, 'Verträge zur Auftragsverarbeitung bestätigt', q)
+    : eigenbetrieb
+      ? 'Mit dem Hoster besteht ein Vertrag zur Auftragsverarbeitung nach Art. 28 DSGVO.'
+      : 'Mit beiden bestehen Verträge zur Auftragsverarbeitung nach Art. 28 DSGVO.';
+  const betrieb = eigenbetrieb ? '' : ` Mit dem
+technischen Betrieb ist ${h(hosting.betrieb.name)}, ${pflicht(hosting.betrieb.anschrift, 'Anschrift des technischen Betreibers', q)}, beauftragt.`;
   let crowdsec;
   if (hosting.crowdsec_meldet_ips === true) {
     crowdsec = ' Diese IP-Adressen werden mit Zeitpunkt und Art der Auffälligkeit an die CrowdSec SAS, Paris, Frankreich, gemeldet, die daraus eine gemeinsame Sperrliste gegen Angriffe erstellt.';
@@ -105,8 +112,7 @@ function datenschutz() {
     crowdsec = ' ' + pflicht(null, 'Meldet CrowdSec IP-Adressen an die CrowdSec-Zentrale?', q);
   }
   ab('Hosting und Server-Logfiles', `
-<p>Diese Website läuft auf einem Server der ${h(hosting.hoster)} (${h(hosting.standort)}). Mit dem
-technischen Betrieb ist ${h(hosting.betrieb.name)}, ${pflicht(hosting.betrieb.anschrift, 'Anschrift des technischen Betreibers', q)}, beauftragt. ${av}</p>
+<p>Diese Website läuft auf einem Server der ${h(hosting.hoster)} (${h(hosting.standort)}).${betrieb} ${av}</p>
 <p>Bei jedem Aufruf speichert der Webserver in Logfiles: IP-Adresse, Datum und Uhrzeit, aufgerufene
 Adresse, Statuscode, übertragene Datenmenge, die zuvor besuchte Seite (Referrer) und die Kennung des
 Browsers. Das ist nötig, um die Website sicher und stabil zu betreiben und Angriffe abzuwehren

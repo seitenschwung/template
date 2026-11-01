@@ -466,10 +466,10 @@ jobs:
 
       # Exactly this tested image goes to production.
       - name: Hand the tested image to the publish job
-        if: success() && steps.has.outputs.dockerfile == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: success() && steps.has.outputs.dockerfile == 'true' && (((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && vars.PREVIEW != 'off' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != '')))
         run: docker save "$IMAGE" | gzip > image.tar.gz
       - uses: actions/upload-artifact@v7
-        if: success() && steps.has.outputs.dockerfile == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: success() && steps.has.outputs.dockerfile == 'true' && (((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && vars.PREVIEW != 'off' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != '')))
         with:
           name: tested-image
           path: image.tar.gz

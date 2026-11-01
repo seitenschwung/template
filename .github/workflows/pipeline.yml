@@ -6,6 +6,9 @@ name: Pipeline
 #
 # Every push to main and every pull request: checks, then the Docker image tested hardened and
 # in real browsers. On main additionally: publish exactly that image and deploy it to Coolify.
+# On a pull request of a deployed project additionally: a preview app of its own in Coolify,
+# https://<repo>-pr<n>.<BASE_DOMAIN>, deleted again once the PR is closed (repository variable
+# PREVIEW=off turns this off).
 #
 # The owner manages this file and the caller. The bot that writes the code can't change workflow
 # files, so it can't weaken these checks or change what runs with the deploy secrets. That is why
@@ -463,21 +466,21 @@ jobs:
 
       # Exactly this tested image goes to production.
       - name: Hand the tested image to the publish job
-        if: success() && steps.has.outputs.dockerfile == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: success() && steps.has.outputs.dockerfile == 'true' && (((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && vars.PREVIEW != 'off' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != '')))
         run: docker save "$IMAGE" | gzip > image.tar.gz
       - uses: actions/upload-artifact@v7
-        if: success() && steps.has.outputs.dockerfile == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: success() && steps.has.outputs.dockerfile == 'true' && (((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && vars.PREVIEW != 'off' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != '')))
         with:
           name: tested-image
           path: image.tar.gz
           retention-days: 1
 
-  # Only on main and only after every check: pushes the tested image (not a rebuild) to the
-  # GitHub container registry, tagged with its commit. Runs no code from the repository.
+  # Only on main (and for a PR preview) and only after every check: pushes the tested image (not a
+  # rebuild) to the GitHub container registry, tagged with its commit. Runs no code from the repository.
   publish:
     name: Publish image
     needs: [checks, image]
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.image.outputs.built == 'true'
+    if: needs.image.outputs.built == 'true' && (((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && vars.PREVIEW != 'off' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != '')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -494,7 +497,8 @@ jobs:
           gunzip -c image.tar.gz | docker load
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           echo "$GH_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-          for tag in "${GITHUB_SHA}" main; do
+          tags=("${GITHUB_SHA}"); [ "$GITHUB_EVENT_NAME" = pull_request ] || tags+=(main)
+          for tag in "${tags[@]}"; do
             docker tag "$IMAGE" "${image}:${tag}"
             docker push -q "${image}:${tag}"
           done
@@ -505,17 +509,25 @@ jobs:
   # projects, the Coolify project and app are then created here) or, for older projects, a set
   # COOLIFY_APP_UUID. Anything else stays green without deploying. Checks out nothing: every
   # command that sees the deploy secrets is written in this file.
+  # On a pull request the same job deploys the preview app <repo>-pr<n> instead (no rollback). Its
+  # docker-compose.yml always comes from main (the PR's base commit), only the image is the PR's:
+  # an unreviewed PR can't loosen the container limits. Every run removes previews of closed PRs.
   deploy:
     name: Deploy (Coolify)
     needs: [image, publish]
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != '')
+    if: (((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != '')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && vars.PREVIEW != 'off' && (vars.DEPLOY == 'auto' || vars.COOLIFY_APP_UUID != ''))) && needs.publish.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: production
+    environment:
+      name: ${{ github.event_name == 'pull_request' && 'preview' || 'production' }}
+      url: ${{ steps.app.outputs.url }}
     concurrency:
-      group: deploy-production
-      cancel-in-progress: false
+      group: deploy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'production' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
+      PREVIEW_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      GH_TOKEN: ${{ github.token }}
       COOLIFY_URL: ${{ vars.COOLIFY_URL || secrets.COOLIFY_URL }}
       COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
       # Set for older projects with a hand-made Coolify app. Otherwise the app is found or created
@@ -532,7 +544,7 @@ jobs:
         run: |
           missing=0
           # Repository variable LEGAL_DRAFT=true lets a draft go live with visibly marked gaps.
-          if [ "$LEGAL_STATE" = incomplete ] && [ "$LEGAL_DRAFT" != true ]; then
+          if [ -z "$PREVIEW_PR" ] && [ "$LEGAL_STATE" = incomplete ] && [ "$LEGAL_DRAFT" != true ]; then
             echo "::error::Impressum/Datenschutz are incomplete (list in the summary of the image job). Fill in legal.json, or set the repository variable LEGAL_DRAFT=true for a draft site."
             missing=1
           fi
@@ -565,14 +577,20 @@ jobs:
       # The project is named like the repository: one Coolify project with one app per site.
       # Looked up by name on every run, so nothing has to be stored in the repository settings.
       - name: Find or create the Coolify app
+        id: app
         run: |
           set -uo pipefail
-          if [ -n "$CFG_APP_UUID" ]; then
+          if [ -n "$CFG_APP_UUID" ] && [ -z "$PREVIEW_PR" ]; then
+            echo "url=${CFG_APP_URL}" >> "$GITHUB_OUTPUT"
             echo "COOLIFY_APP_UUID=${CFG_APP_UUID}" >> "$GITHUB_ENV"; echo "APP_URL=${CFG_APP_URL}" >> "$GITHUB_ENV"
             exit 0
           fi
-          NAME="${GITHUB_REPOSITORY#*/}"; NAME="${NAME,,}"
+          NAME="${GITHUB_REPOSITORY#*/}"; NAME="${NAME,,}"; PROJECT="$NAME"
           URL="https://${APP_DOMAIN:-${NAME}.${BASE_DOMAIN}}"
+          BRANCH="${GITHUB_REF_NAME}"
+          if [ -n "$PREVIEW_PR" ]; then   # one level below BASE_DOMAIN, so the wildcard DNS entry and a plain certificate cover it
+            NAME="${NAME}-pr${PREVIEW_PR}"; URL="https://${NAME//./-}.${BASE_DOMAIN}"; BRANCH=main
+          fi
           BASE="${COOLIFY_URL%/}/api/v1"
           WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
           ( umask 077; printf 'Authorization: Bearer %s\n' "$COOLIFY_TOKEN" > "$WORK/auth" )
@@ -596,14 +614,14 @@ jobs:
               server="$(jq -r '.[0].uuid' "$WORK/body")"
             fi
             code=$(coolify GET /projects); ok "$code" || fail "Could not list Coolify projects (HTTP $code)"
-            project="$(jq -r --arg n "$NAME" '[.[] | select(.name == $n)][0].uuid // empty' "$WORK/body")"
+            project="$(jq -r --arg n "$PROJECT" '[.[] | select(.name == $n)][0].uuid // empty' "$WORK/body")"
             if [ -z "$project" ]; then
-              code=$(coolify POST /projects "$(jq -cn --arg n "$NAME" --arg d "GitHub repository ${GITHUB_REPOSITORY}" '{name: $n, description: $d}')")
+              code=$(coolify POST /projects "$(jq -cn --arg n "$PROJECT" --arg d "GitHub repository ${GITHUB_REPOSITORY}" '{name: $n, description: $d}')")
               ok "$code" || fail "Could not create the Coolify project (HTTP $code): $(head -c 300 "$WORK/body")"
               project="$(jq -r '.uuid' "$WORK/body")"
             fi
             body="$(jq -cn --arg n "$NAME" --arg p "$project" --arg s "$server" --arg r "https://github.com/${GITHUB_REPOSITORY}" \
-              --arg b "${GITHUB_REF_NAME}" --arg d "${URL}:8080" '{
+              --arg b "${BRANCH}" --arg d "${URL}:8080" '{
                 project_uuid: $p, server_uuid: $s, environment_name: "production", name: $n,
                 git_repository: $r, git_branch: $b, build_pack: "dockercompose", ports_exposes: "8080",
                 docker_compose_location: "/docker-compose.yml", is_auto_deploy_enabled: false, instant_deploy: false,
@@ -615,6 +633,7 @@ jobs:
             echo "🆕 Created the Coolify project \`${NAME}\` with its app, domain ${URL}" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "COOLIFY_APP_UUID=${uuid}" >> "$GITHUB_ENV"; echo "APP_URL=${URL}" >> "$GITHUB_ENV"
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
 
       - name: Write the deploy script
         run: |
@@ -650,7 +669,7 @@ jobs:
           code=$(coolify PATCH "/applications/${COOLIFY_APP_UUID}/envs" "$env_json")
           [ "$code" = 404 ] && code=$(coolify POST "/applications/${COOLIFY_APP_UUID}/envs" "$env_json")
           ok "$code" || { error "Could not set IMAGE in Coolify (HTTP $code): $(head -c 300 "$WORK/body")"; exit 1; }
-          code=$(coolify PATCH "/applications/${COOLIFY_APP_UUID}" "$(jq -cn --arg v "$TAG" '{git_commit_sha: $v}')")
+          code=$(coolify PATCH "/applications/${COOLIFY_APP_UUID}" "$(jq -cn --arg v "${COMPOSE_SHA:-$TAG}" '{git_commit_sha: $v}')")
           ok "$code" || echo "::warning::Could not pin the commit in Coolify (HTTP $code), the compose file may come from the branch head."
 
           # 2. Deploy and follow it. If the new build does not answer (Coolify says healthy, the proxy
@@ -707,6 +726,7 @@ jobs:
       # What runs now: the version an automatic rollback returns to.
       - name: Note the running version
         id: before
+        if: env.PREVIEW_PR == ''
         run: |
           version="$(curl -sS --max-time 15 "${APP_URL%/}/version.txt" | tr -cd '0-9a-f' | head -c 40 || true)"
           if [[ "$version" =~ ^[0-9a-f]{40}$ ]]; then
@@ -717,15 +737,36 @@ jobs:
 
       - name: Deploy the tested image
         id: deploy
-        run: '"$RUNNER_TEMP/deploy.sh" "${GITHUB_SHA}"'
+        run: |
+          [ -n "$PREVIEW_PR" ] && export COMPOSE_SHA="$BASE_SHA"
+          "$RUNNER_TEMP/deploy.sh" "${GITHUB_SHA}"
 
       # The new version failed to deploy or to answer correctly: put the previous one back.
       # The job stays red either way.
       - name: Roll back to the previous version
-        if: failure() && steps.deploy.outcome == 'failure' && steps.before.outputs.version != '' && steps.before.outputs.version != github.sha
+        if: failure() && env.PREVIEW_PR == '' && steps.deploy.outcome == 'failure' && steps.before.outputs.version != '' && steps.before.outputs.version != github.sha
         env:
           PREVIOUS: ${{ steps.before.outputs.version }}
         run: |
           echo "::warning::Rolling back to ${PREVIOUS}"
           echo "### ⚠️ Rolled back to \`${PREVIOUS:0:12}\`" >> "$GITHUB_STEP_SUMMARY"
           "$RUNNER_TEMP/deploy.sh" "${PREVIOUS}"
+      # Preview apps of closed PRs go: Coolify app (with its containers), the preview environment stays.
+      - name: Remove previews of closed PRs
+        if: always() && steps.app.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          BASE="${COOLIFY_URL%/}/api/v1"; NAME="${GITHUB_REPOSITORY#*/}"; NAME="${NAME,,}"
+          WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+          ( umask 077; printf 'Authorization: Bearer %s\n' "$COOLIFY_TOKEN" > "$WORK/auth" )
+          curl -sS --max-time 30 -H "@$WORK/auth" -H 'Accept: application/json' "${BASE}/applications" -o "$WORK/apps" || exit 0
+          jq -r --arg n "$NAME" '.[] | select(.name | startswith($n + "-pr")) | "\(.uuid) \(.name)"' "$WORK/apps" | while read -r uuid app; do
+            n="${app#"$NAME"-pr}"; [[ "$n" =~ ^[0-9]+$ ]] || continue
+            state="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${n}" --jq .state 2>/dev/null || echo unknown)"
+            [ "$state" = closed ] || continue
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 -X DELETE -H "@$WORK/auth" \
+              "${BASE}/applications/${uuid}?delete_volumes=true&docker_cleanup=true" || echo 000)
+            echo "Preview ${app} (PR #${n} closed): removed, HTTP ${code}"
+            echo "🧹 Removed the preview of closed PR #${n}" >> "$GITHUB_STEP_SUMMARY"
+          done

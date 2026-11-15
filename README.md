@@ -45,6 +45,12 @@ They are warnings (step "SEO findings", the run summary, `seo-findings.txt` in t
 artifact) until the repository variable `SEO_STRICT=on` is set; then they fail the browser tests.
 Turn it on per project once its warnings are fixed.
 
+Screenshots for the PR preview (`preview.yml`): the pipeline finds every page by itself (links,
+`sitemap.xml`, every `.html` file in the image, variants from `.github/preview.json`) and only shoots
+the pages that render differently than on `main`. A global change (layout, global CSS, Dockerfile,
+dependencies, config), a manual run or the repository variable `SCREENSHOTS=all` shoots all pages.
+Details: `preview/README.md`.
+
 ## Setting up the deploy
 
 `dev <name>` does this for a new project: it sets the repository variable `DEPLOY=auto` and starts

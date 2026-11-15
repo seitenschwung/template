@@ -96,7 +96,11 @@ function assets(html) {
 }
 function cssRefs(css) { return attr(css, /url\(\s*["']?([^"')]+)/gi).concat(attr(css, /@import\s+["']([^"']+)/gi)).filter((u) => !u.startsWith('data:')); }
 
-export async function discover(base, { docroot = [], variants = [], log = () => {} } = {}) {
+// Server error pages that sit in the web root but are no pages of the site (nginx default).
+const EXCLUDE = ['/50x.html'];
+
+export async function discover(base, { docroot = [], variants = [], exclude = [], log = () => {} } = {}) {
+  const excluded = matcher([...EXCLUDE, ...exclude].map((g) => g.replace(/^\//, '')));
   const origin = new URL(base).origin;
   const pages = new Map();       // path -> {path, html}
   const known = new Set();       // samePage() of every page found
@@ -108,7 +112,7 @@ export async function discover(base, { docroot = [], variants = [], log = () => 
   const fromFiles = docroot.map((f) => `/${f.replace(/^\/+/, '')}`.replace(/\/index\.html$/, '/'));
   const tried = new Set();
   const visit = async (path, source) => {
-    if (tried.has(path) || pages.size >= MAX_PAGES || known.has(samePage(path))) return;
+    if (tried.has(path) || pages.size >= MAX_PAGES || known.has(samePage(path)) || excluded(path.replace(/^\//, ''))) return;
     tried.add(path);
     const r = await get(base, path);
     if (r.status !== 200 || !/^text\/html/i.test(r.type)) { log(`skip ${path} (${r.status || r.error} ${r.type})`); return; }
@@ -208,7 +212,7 @@ async function main() {
     try { baseline = Object.fromEntries(JSON.parse(readFileSync(a.baseline, 'utf8')).pages.map((p) => [p.slug, p.hash])); } catch { baseline = null; }
   }
 
-  const pages = await discover(a['base-url'], { docroot, variants: config.variants ?? [], log: a.verbose ? (m) => console.error(m) : () => {} });
+  const pages = await discover(a['base-url'], { docroot, variants: config.variants ?? [], exclude: config.exclude ?? [], log: a.verbose ? (m) => console.error(m) : () => {} });
   const decision = a.force && a.force !== true ? { mode: 'all', reason: a.force } : classify(changed, config);
   const result = { ...select(pages, decision, baseline), changedFiles: changed?.length ?? null };
   if (a.out) writeFileSync(a.out, `${JSON.stringify(result, null, 2)}\n`);

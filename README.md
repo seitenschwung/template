@@ -51,8 +51,9 @@ the pages that render differently than on `main`. A global change (layout, globa
 dependencies, config), a manual run or the repository variable `SCREENSHOTS=all` shoots all pages.
 Details: `preview/README.md`.
 
-The preview app of a PR (`https://<repo>-pr<n>.<BASE_DOMAIN>`) is linked at the top of the PR
-description (job "Preview address" in `preview.yml`), with a note when it still runs an older commit.
+The top of every PR description links the PR's preview app (`https://<repo>-pr<n>.<BASE_DOMAIN>`, with a
+note when it still runs an older commit) and the project's box (`https://<repo>.box.seitenschwung.com`,
+Tailnet only, unchecked; repository variable `BOX_PREVIEW_DOMAIN=off` leaves it out).
 
 ## Setting up the deploy
 

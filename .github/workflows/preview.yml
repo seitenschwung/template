@@ -19,6 +19,12 @@ name: Preview
 # stays small. Raw image links only work in public repositories; in a private one the comment
 # links the workflow run instead.
 #
+# The top of the PR description links the PR's preview app (https://<repo>-pr<n>.<BASE_DOMAIN>, deployed
+# by pipeline.yml, only when it answers) and the project's box (https://<repo>.box.seitenschwung.com,
+# dev server on the home server, Tailnet only, unchecked; repository variable BOX_PREVIEW_DOMAIN=off
+# leaves it out). A block between <!-- preview-url --> markers, replaced on every run; the rest of the
+# description is left alone.
+#
 # Runs no code from the repository: it checks out nothing and only handles the screenshots artifact.
 # Fork PRs are skipped (their token is read-only).
 on:
@@ -28,6 +34,58 @@ permissions:
   contents: read
 
 jobs:
+  address:
+    name: Preview address in the PR description
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.sha }}   # the merge commit: what pipeline.yml built and deployed
+      BASE_DOMAIN: ${{ vars.BASE_DOMAIN || 'seitenschwung.com' }}
+      PREVIEW: ${{ vars.PREVIEW }}
+      BOX_DOMAIN: ${{ vars.BOX_PREVIEW_DOMAIN || 'box.seitenschwung.com' }}
+    steps:
+      - name: Link the preview app and the box
+        run: |
+          set -uo pipefail
+          lines=()
+          # 1. The PR's own app, same name as pipeline.yml gives it. Listed only when it answers.
+          name="${REPO#*/}"; name="${name,,}"
+          url="https://${name//./-}-pr${PR}.${BASE_DOMAIN}"
+          code=000; [ "$PREVIEW" = off ] || code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${url}/healthz" || echo 000)"
+          if [ "$code" = 200 ]; then
+            running="$(curl -sS --max-time 15 -H 'Cache-Control: no-cache' "${url}/version.txt" | tr -cd '0-9a-f' | head -c 40 || true)"
+            if [ "$running" = "$SHA" ]; then state="tested build of this PR"
+            else state="⏳ still the previous build (${running:0:7}); the newest commit is being deployed or failed, see Checks"; fi
+            lines+=("> 🔗 **Preview:** ${url}  " "> <sub>${state}</sub>")
+          else
+            echo "No preview app answers at ${url} (HTTP ${code})."
+          fi
+          # 2. The project's box (dev preview on the home server, Tailnet only, label as in `dev preview`).
+          #    The runner can't reach it, so it is listed unchecked. BOX_PREVIEW_DOMAIN=off leaves it out.
+          if [ "$BOX_DOMAIN" != off ]; then
+            label="${name//[._]/-}"
+            lines+=("> 🧪 **Box:** https://${label}.${BOX_DOMAIN}  " "> <sub>live working state of the box, not necessarily this PR · Tailnet only · not checked by CI</sub>")
+          fi
+          gh api "repos/${REPO}/pulls/${PR}" --jq '.body // ""' > body.md
+          # drop an old block, put the new one on top (or nothing, if there is nothing to link)
+          awk '/<!-- preview-url -->/{skip=1} !skip{print} /<!-- \/preview-url -->/{skip=0}' body.md | sed '/./,$!d' > rest.md
+          {
+            if [ "${#lines[@]}" -gt 0 ]; then
+              echo '<!-- preview-url -->'; printf '%s\n' "${lines[@]}"; echo '<!-- /preview-url -->'; echo
+            fi
+            cat rest.md
+          } > new.md
+          if cmp -s body.md new.md; then echo "PR description already up to date."; exit 0; fi
+          gh api -X PATCH "repos/${REPO}/pulls/${PR}" -F "body=@new.md" > /dev/null
+          echo "Updated the preview links in the description of #${PR}"
+          printf '%s\n' "${lines[@]}" >> "$GITHUB_STEP_SUMMARY"
+
   screenshots:
     name: Screenshots (baseline / PR comment)
     if: >-

@@ -51,6 +51,9 @@ the pages that render differently than on `main`. A global change (layout, globa
 dependencies, config), a manual run or the repository variable `SCREENSHOTS=all` shoots all pages.
 Details: `preview/README.md`.
 
+The preview app of a PR (`https://<repo>-pr<n>.<BASE_DOMAIN>`) is linked at the top of the PR
+description (job "Preview address" in `preview.yml`), with a note when it still runs an older commit.
+
 ## Setting up the deploy
 
 `dev <name>` does this for a new project: it sets the repository variable `DEPLOY=auto` and starts

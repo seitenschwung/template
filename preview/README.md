@@ -40,6 +40,7 @@ that are gone are removed, the others keep their picture.
 }
 ```
 - `global`, `ignore`: more patterns as in `.gitignore` (without a slash they match at any depth).
+- `exclude`: URL paths (patterns as above) that are never shot; `/50x.html` (the nginx error page) is always left out.
 - `variants`: for every page whose HTML matches the regular expression `match` (and whose path
   matches `pages`, if given), also the URL with `query`, saved as `<page>.<name>`.
 

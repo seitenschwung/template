@@ -66,6 +66,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0   # the screenshot selection compares with the base commit
       - name: Dockerfile present?
         id: has
         run: |
@@ -149,6 +150,63 @@ jobs:
           if [[ "$type" == text/html* ]]; then echo "html=true" >> "$GITHUB_OUTPUT"; else echo "html=false" >> "$GITHUB_OUTPUT"; fi
           echo "ok: healthz, version ${version}, / is ${type:-no content type}"
 
+      # Which pages get a full-page screenshot for preview.yml (preview/README.md in
+      # seitenschwung/template): every page is found by itself (links, sitemap.xml, every .html file
+      # in the image, variants from .github/preview.json), and only those that render differently
+      # than on main are shot. All pages: a global file changed (layout, global CSS, Dockerfile,
+      # dependencies, config), a manual run (workflow_dispatch), or the repository variable
+      # SCREENSHOTS=all. The browser tests themselves still check every page.
+      - name: Pages to screenshot
+        id: shots
+        if: steps.contract.outputs.html == 'true' && vars.BROWSER_TESTS != 'off' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+        continue-on-error: true   # without a selection the tests shoot every page, as before
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          SCREENSHOTS: ${{ vars.SCREENSHOTS }}
+        run: |
+          set -uo pipefail
+          e2e="$RUNNER_TEMP/e2e"; mkdir -p "$e2e"
+          if [ "$GITHUB_REPOSITORY" = seitenschwung/template ]; then kit=preview
+          else
+            [ -d "$RUNNER_TEMP/template" ] || git clone -q --depth 1 --branch "$LEGAL_KIT_REF" https://github.com/seitenschwung/template "$RUNNER_TEMP/template"
+            kit="$RUNNER_TEMP/template/preview"
+          fi
+          [ -f "$kit/pages.mjs" ] || { echo "::warning::No preview/pages.mjs in the template at ${LEGAL_KIT_REF}: every page is shot"; exit 0; }
+
+          # Changed files: a PR's merge commit against its base, a push against the previous head.
+          force=""
+          if [ "$EVENT" = workflow_dispatch ]; then force="manual run (workflow_dispatch)"
+          elif [ "${SCREENSHOTS:-}" = all ]; then force="repository variable SCREENSHOTS=all"; fi
+          changed=()
+          if [ "$EVENT" = pull_request ] && git rev-parse -q --verify HEAD^2 > /dev/null; then
+            git diff --name-only --no-renames HEAD^1 HEAD > "$e2e/changed-files.txt" && changed=(--changed "$e2e/changed-files.txt")
+          elif [ "$EVENT" = push ] && [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            git diff --name-only --no-renames "$BEFORE" HEAD > "$e2e/changed-files.txt" && changed=(--changed "$e2e/changed-files.txt")
+          fi
+
+          # Fingerprints of main, written by preview.yml next to the baseline screenshots.
+          baseline=()
+          if gh api -H 'Accept: application/vnd.github.raw' "repos/${GITHUB_REPOSITORY}/contents/main/pages.json?ref=pr-previews" > "$e2e/baseline-pages.json" 2>/dev/null; then
+            baseline=(--baseline "$e2e/baseline-pages.json")
+          fi
+
+          # Every .html file the image serves, relative to its web root (the folder of the shortest
+          # path to an index.html), so pages that nothing links to are shot too.
+          docker export app | tar -tf - 2>/dev/null | grep -E '\.html$' | grep -vE '(^|/)node_modules/|^(usr/(lib|share/doc)|proc|sys)/' > "$e2e/image-html.txt" || true
+          root="$(grep -E '(^|/)index\.html$' "$e2e/image-html.txt" | awk '{ print length, $0 }' | sort -n | head -n1 | cut -d' ' -f2-)"
+          root="${root%index.html}"
+          docroot=()
+          if [ -n "$root" ] || grep -qx index.html "$e2e/image-html.txt"; then
+            grep -F "$root" "$e2e/image-html.txt" | while IFS= read -r f; do [ "${f#"$root"}" != "$f" ] && printf '%s\n' "${f#"$root"}"; done > "$e2e/docroot.txt"
+            docroot=(--docroot-list "$e2e/docroot.txt")
+          fi
+
+          node "$kit/pages.mjs" --base-url http://127.0.0.1:8080 --config .github/preview.json \
+            "${changed[@]}" "${baseline[@]}" "${docroot[@]}" ${force:+--force "$force"} --out "$e2e/pages.json" | tee "$e2e/pages.txt"
+          { echo "### 📸 Screenshots"; echo '```'; cat "$e2e/pages.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
       # Real browsers against exactly this image. The tests check behaviour, not content, so
       # they keep working when the site changes. Switch off with the repository variable
       # BROWSER_TESTS=off for a project without a web UI.
@@ -181,6 +239,11 @@ jobs:
           // Written by the "Legal pages" step when the project has a legal.json: the hosts and cookies
           // its legal texts cover, and the generated pages.
           const LEGAL = existsSync('legal-status.json') ? JSON.parse(readFileSync('legal-status.json', 'utf8')) : null;
+          // Written by the step "Pages to screenshot": every page with shoot true/false. Without it every
+          // checked page is shot.
+          const SHOTS = existsSync('pages.json') ? JSON.parse(readFileSync('pages.json', 'utf8')) : null;
+          const slugOf = (path) => (path === '/' ? 'home' : path.replace(/^\/|\/$/g, '').replace(/[^A-Za-z0-9._-]+/g, '_'));
+          const wanted = (slug) => !SHOTS || SHOTS.pages.some((p) => p.slug === slug && p.shoot);
           const foreign = new Map();   // host -> first URL requested from it
 
           // SEO and page weight, checked on the desktop run. Findings are warnings (step "SEO findings")
@@ -327,10 +390,10 @@ jobs:
             await scrollThrough(page);
             if (testInfo.project.name === 'desktop') await weighPage(page, path);
 
-            // Full-page shot for the PR preview comment (see preview.yml), one per viewport and page.
+            // Full-page shot for the PR preview comment (see preview.yml), one per viewport and selected page.
             mkdirSync('shots', { recursive: true });
-            const slug = path === '/' ? 'home' : path.replace(/^\/|\/$/g, '').replace(/[^A-Za-z0-9._-]+/g, '_');
-            await page.screenshot({ path: `shots/${testInfo.project.name}--${slug}.png`, fullPage: true }).catch(() => {});
+            const slug = slugOf(path);
+            if (wanted(slug)) await page.screenshot({ path: `shots/${testInfo.project.name}--${slug}.png`, fullPage: true }).catch(() => {});
 
             const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
             expect.soft(overflow, `${path} horizontal overflow in px`).toBeLessThanOrEqual(1);
@@ -388,6 +451,23 @@ jobs:
               expect.soft(unknown, 'cookies that no building block in legal.json covers').toEqual([]);
             }
           });
+
+          // Selected pages the crawl did not reach (not linked, or variants such as ?vorschau=3):
+          // screenshot only, no checks, so draft pages can't fail the run.
+          test('screenshots of the remaining selected pages', async ({ page }, testInfo) => {
+            const rest = (SHOTS?.pages ?? []).filter((p) => p.shoot && !existsSync(`shots/${testInfo.project.name}--${p.slug}.png`));
+            test.skip(!rest.length, 'nothing left to shoot');
+            test.setTimeout(30_000 + rest.length * 20_000);
+            mkdirSync('shots', { recursive: true });
+            for (const p of rest) {
+              const res = await page.goto(p.path, { waitUntil: 'load' }).catch(() => null);
+              if (!res || res.status() !== 200) { console.log(`no screenshot of ${p.path}: HTTP ${res?.status() ?? 'error'}`); continue; }
+              await page.waitForLoadState('networkidle').catch(() => {});
+              await scrollThrough(page);
+              await page.screenshot({ path: `shots/${testInfo.project.name}--${p.slug}.png`, fullPage: true }).catch(() => {});
+            }
+            console.log(`${testInfo.project.name}: ${rest.length} more screenshot(s): ${rest.map((p) => p.path).join(', ')}`);
+          });
           EOF
           cat > lighthouse-check.mjs <<'EOF'
           // Fails below the minimum scores. Performance is only reported: a shared CI runner
@@ -418,6 +498,7 @@ jobs:
               npm install --no-audit --no-fund --loglevel=error @playwright/test@1.63.0 @axe-core/playwright@4.13.0 lighthouse@13.5.0
               status=0
               npx playwright test || status=1
+              if [ -f pages.json ]; then mkdir -p shots && cp pages.json shots/pages.json; fi
               mkdir -p lighthouse
               chrome="$(node -e "import(\"@playwright/test\").then(m => console.log(m.chromium.executablePath()))")"
               CHROME_PATH="$chrome" npx lighthouse "$BASE_URL/" --quiet \

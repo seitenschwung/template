@@ -3,8 +3,12 @@ name: Preview
 # Optional job of a project's ci.yml (`uses: seitenschwung/template/.github/workflows/preview.yml@v1`,
 # after the pipeline job): shows what a pull request changes visually, without waiting for a deploy.
 #
-# The pipeline takes full-page screenshots of every page it tests (desktop and mobile).
-#  - On main: the desktop shots become the baseline (folder `main/` on the branch `pr-previews`).
+# The pipeline takes full-page screenshots (desktop and mobile) of the pages that render differently
+# than on main, or of all pages after a global change or a manual run (preview/README.md). It
+# finds the pages itself and sends their list with fingerprints as `pages.json` in the artifact.
+#  - On main: the new desktop shots replace their pages in the baseline (folder `main/` on the branch
+#    `pr-previews`), pages that are gone are dropped, `main/pages.json` keeps the fingerprints that
+#    the next run compares with. Without a `pages.json` (old pipeline) the shots replace the baseline.
 #  - On a PR labelled `manual-review` (the box sets it when a human should look): every page is compared with that baseline. One sticky comment shows only the pages
 #    that changed (before | after), at most 6; the rest is counted. Without a baseline yet it shows
 #    the start page. Mobile shots stay in the `screenshots` artifact of the run, they are not
@@ -89,7 +93,14 @@ jobs:
             convert "$f" -gravity North -crop "100%x${MAX_HEIGHT}+0+0" +repage -strip -quality 70 "$proc/${name}.jpg"
           done
           pages=("$proc"/*.jpg)
-          [ "${#pages[@]}" -gt 0 ] || { echo "No desktop screenshots, nothing to do."; exit 0; }
+          # The page list of the pipeline (only names that are safe as file names).
+          manifest=""
+          if [ -f shots/pages.json ] && jq -e '.pages | type == "array"' shots/pages.json > /dev/null 2>&1; then
+            manifest="$RUNNER_TEMP/pages.json"
+            jq '.pages |= map(select(.slug | test("^[A-Za-z0-9._-]+$")))' shots/pages.json > "$manifest"
+            echo "Screenshots: $(jq -r '.mode + " (" + .reason + ")"' "$manifest")"
+          fi
+          [ "${#pages[@]}" -gt 0 ] || [ -n "$manifest" ] || { echo "No desktop screenshots, nothing to do."; exit 0; }
 
           # 2. The branch pr-previews as one commit. `rebuild` receives the work tree and changes it.
           work="$(mktemp -d)"; git -C "$work" init -q
@@ -115,10 +126,29 @@ jobs:
           }
 
           if [ "$EVENT" != pull_request ]; then
-            # main: these shots are the new baseline
-            tree_main() { rm -rf main; mkdir -p main; cp "${pages[@]}" main/; }
+            if [ -z "$manifest" ]; then
+              # old pipeline: these shots are the new baseline
+              tree_main() { rm -rf main; mkdir -p main; cp "${pages[@]}" main/; }
+            else
+              # only the pages that changed were shot: replace those, drop pages that are gone, keep
+              # the rest. The fingerprints list only pages that have a current picture, so a page
+              # whose shot failed is shot again next time.
+              tree_main() {
+                local f n
+                mkdir -p main
+                [ "${#pages[@]}" -eq 0 ] || cp "${pages[@]}" main/
+                for f in main/*.jpg; do
+                  n="$(basename "$f" .jpg)"
+                  jq -e --arg n "$n" 'any(.pages[]; .slug == $n)' "$manifest" > /dev/null || rm -f "$f"
+                done
+                jq --arg have "$(cd "$proc" && ls -1 | sed 's/\.jpg$//')" --arg base "$(cd main && ls -1 | sed 's/\.jpg$//')" '
+                  ($have | split("\n")) as $new | ($base | split("\n")) as $old
+                  | {sha: env.SHA, pages: [.pages[] | select((.slug | IN($new[])) or ((.shoot | not) and (.slug | IN($old[])))) | {slug, path, hash}]}
+                ' "$manifest" > main/pages.json
+              }
+            fi
             retry publish "baseline: main @ ${short}" tree_main
-            echo "Baseline updated (${#pages[@]} pages)."
+            echo "Baseline updated (${#pages[@]} new screenshot(s))."
             exit 0
           fi
 
@@ -133,6 +163,11 @@ jobs:
           git fetch -q origin pr-previews 2>/dev/null && git checkout -q -f FETCH_HEAD || true
           have_baseline=false; [ -d main ] && have_baseline=true
           changed=(); new=(); same=0
+          skipped=0; why=""
+          if [ -n "$manifest" ]; then
+            skipped="$(jq '[.pages[] | select(.shoot | not)] | length' "$manifest")"
+            why="$(jq -r .reason "$manifest")"
+          fi
           for p in "${pages[@]}"; do
             n="$(basename "$p")"
             if [ "$have_baseline" = true ] && [ -f "main/$n" ]; then
@@ -141,7 +176,8 @@ jobs:
             elif [ "$have_baseline" = true ]; then new+=("$n")
             fi
           done
-          if [ "$have_baseline" = false ]; then   # nothing to compare with: show the start page
+          if [ "${#pages[@]}" -eq 0 ]; then show=()
+          elif [ "$have_baseline" = false ]; then   # nothing to compare with: show the start page
             [ -f "$proc/home.jpg" ] && show=("home.jpg") || show=("$(basename "${pages[0]}")")
           else
             show=("${changed[@]}" "${new[@]}")
@@ -173,6 +209,8 @@ jobs:
             echo
             if [ "$public" != true ]; then
               echo "Private repository: the images can't be shown here. Download the \`screenshots\` artifact of [this run](${run_url})."
+            elif [ "${#pages[@]}" -eq 0 ]; then
+              echo "No page needed a new screenshot: ${why}."
             elif [ "$have_baseline" = false ]; then
               echo "No baseline of \`main\` yet (it is created by the next push to main), so this shows the start page only."
               echo
@@ -191,8 +229,12 @@ jobs:
               done
               [ "$total_show" -le "$MAX_SHOWN" ] || { echo; echo "…and $((total_show - MAX_SHOWN)) more changed page(s)."; }
             fi
+            if [ "$skipped" -gt 0 ]; then
+              echo
+              echo "<sub>${skipped} page(s) not shot because they render the same as on \`main\` (${why}). All pages: run the workflow manually.</sub>"
+            fi
             echo
-            echo "<sub>Mobile and all pages: \`screenshots\` artifact of the [workflow run](${run_url})</sub>"
+            echo "<sub>Mobile and all shot pages: \`screenshots\` artifact of the [workflow run](${run_url})</sub>"
           } > "$RUNNER_TEMP/comment.md"
 
           id="$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- pr-preview -->"))) | .id' | head -n1)"
@@ -201,4 +243,4 @@ jobs:
           else
             gh api -X POST "repos/${REPO}/issues/${PR}/comments" -F "body=@${RUNNER_TEMP}/comment.md" > /dev/null
           fi
-          echo "Commented on #${PR}: ${#changed[@]} changed, ${#new[@]} new, ${same} same"
+          echo "Commented on #${PR}: ${#changed[@]} changed, ${#new[@]} new, ${same} same, ${skipped} not shot"
